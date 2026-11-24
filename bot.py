@@ -1,8 +1,8 @@
 import json, os, time, uuid, requests, pandas as pd
 
 TOKEN = os.environ["BOT_TOKEN"].strip()
-if TOKEN.startswith("bot"):
-    TOKEN = TOKEN[3:]
+if "bot" in TOKEN:
+    TOKEN = TOKEN.split("bot")[-1].strip("/")
 CHAT = str(os.environ["CHAT_ID"]).strip()
 ADMIN = str(os.environ["ADMIN_ID"]).strip()
 
@@ -11,7 +11,7 @@ SIMBOLOS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "D
 CONF_MIN, RIESGO_ATR, COOLDOWN = 70, 1.5, 14400
 LIMITE_POR_USUARIO_HORA = 5
 
-TG = f"https://telegram.org{TOKEN}"
+TG = "https://" + "api.telegram.org/bot" + TOKEN
 est = json.load(open("estado.json"))
 fin = time.time() + 200
 
@@ -34,41 +34,36 @@ def enviar(txt, chat=CHAT, thread_id=None, reply_id=None):
     return tg("sendMessage", **kw)
 
 def velas(sim, tf="15", lim=250):
-    par_guion = sim.replace("USDT", "-USDT")
-    par_bajo = sim.replace("USDT", "_USDT")
-    for f in ("kucoin", "gate"):
-        try:
-            if f == "kucoin":
-                intervalo = "1hour" if tf == "60" else "15min"
-                r = requests.get(
-                    "https://kucoin.com",
-                    timeout=12,
-                    params={"type": intervalo, "symbol": par_guion}
-                )
-                r.raise_for_status()
-                lista = r.json().get("data") or []
-                if not lista:
-                    continue
-                d = [[x[0], x[1], x[3], x[4], x[2], x[5], x[6]] for x in reversed(lista[:lim])]
-            else:
-                intervalo = "1h" if tf == "60" else "15m"
-                r = requests.get(
-                    "https://gateio.ws",
-                    timeout=12,
-                    params={"currency_pair": par_bajo, "interval": intervalo, "limit": lim}
-                )
-                r.raise_for_status()
-                lista = r.json() or []
-                if not lista or isinstance(lista, dict):
-                    continue
-                d = [[x[0], x[5], x[3], x[4], x[2], x[6], x[1]] for x in lista]
-            df = pd.DataFrame(d, columns=["t", "o", "h", "l", "c", "v", "tv"])
-            for c in "ohlcv":
-                df[c] = df[c].astype(float)
-            return df
-        except Exception as e:
-            print(f, sim, e)
-    return None
+    base = sim.replace("USDT", "")
+    # CryptoCompare API pública (100% abierta en GitHub Actions / EE.UU.)
+    endpoint = "histohour" if tf == "60" else "histominute"
+    agg = 1 if tf == "60" else 15
+    url = "https://" + "://cryptocompare.com" + endpoint
+    try:
+        r = requests.get(
+            url,
+            timeout=12,
+            params={"fsym": base, "tsym": "USDT", "limit": lim, "aggregate": agg}
+        )
+        r.raise_for_status()
+        data = r.json().get("Data", {}).get("Data") or []
+        if not data:
+            return None
+        df = pd.DataFrame(data)
+        df = df.rename(columns={
+            "time": "t",
+            "open": "o",
+            "high": "h",
+            "low": "l",
+            "close": "c",
+            "volumefrom": "v"
+        })
+        for c in "ohlcv":
+            df[c] = df[c].astype(float)
+        return df[["t", "o", "h", "l", "c", "v"]]
+    except Exception as e:
+        print("cc", sim, e)
+        return None
 
 def ema(s, n): return s.ewm(span=n, adjust=False).mean()
 
@@ -91,7 +86,7 @@ def analizar_moneda(sim, usuario_nombre):
         sim += "USDT"
     df, d1 = velas(sim), velas(sim, "60")
     if df is None or d1 is None or len(df) < 150:
-        return f"⚠️ {usuario_nombre}, no encontré datos suficientes para <b>{sim}</b> en KuCoin/Gate. Verifica que el símbolo exista."
+        return f"⚠️ {usuario_nombre}, no encontré datos suficientes para <b>{sim}</b>. Verifica que el símbolo exista."
     df["r"] = rsi(df["c"]); df["e20"] = ema(df["c"], 20)
     df["e50"] = ema(df["c"], 50); df["a"] = atr(df)
     df["vma"] = df["v"].rolling(20).mean(); e200 = ema(d1["c"], 200).iloc[-1]
@@ -195,7 +190,7 @@ def comandos():
                 
             historial_u.append(ahora)
             est["consultas_user"][uid] = historial_u
-            moneda = partes[1]
+            moneda = partes
             enviar(analizar_moneda(moneda, nombre), cid, tid, mid)
             
         elif txt.startswith("/stats"):
