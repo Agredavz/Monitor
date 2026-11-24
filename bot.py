@@ -3,9 +3,15 @@ import json, os, time, uuid, requests, pandas as pd
 TOKEN = os.environ["BOT_TOKEN"]
 CHAT = str(os.environ["CHAT_ID"])
 ADMIN = str(os.environ["ADMIN_ID"])
-SIMBOLOS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+# Pon aquí el número ID del tema "Consultas IA" (déjalo en 0 si quieres permitirlo en cualquier tema)
+TEMA_CONSULTAS = 0  
+
+SIMBOLOS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "AVAXUSDT"]
 CONF_MIN, RIESGO_ATR, COOLDOWN = 70, 1.5, 14400
-TG = f"https://api.telegram.org/bot{TOKEN}"
+LIMITE_POR_USUARIO_HORA = 5
+
+TG = f"https://telegram.org{TOKEN}"
 est = json.load(open("estado.json"))
 fin = time.time() + 200
 
@@ -13,22 +19,32 @@ def tg(metodo, **kw):
     try: return requests.post(f"{TG}/{metodo}", data=kw, timeout=15).json()
     except Exception as e: print("tg", e); return {}
 
-def enviar(txt, chat=CHAT):
-    return tg("sendMessage", chat_id=chat, text=txt, parse_mode="HTML",
-              disable_web_page_preview="true")
+def enviar(txt, chat=CHAT, thread_id=None, reply_id=None):
+    kw = {"chat_id": chat, "text": txt, "parse_mode": "HTML", "disable_web_page_preview": "true"}
+    if thread_id:
+        kw["message_thread_id"] = thread_id
+    if reply_id:
+        kw["reply_to_message_id"] = reply_id
+    return tg("sendMessage", **kw)
 
 def velas(sim, tf="15", lim=250):
     for f in ("bybit", "okx"):
         try:
             if f == "bybit":
-                r = requests.get("https://api.bybit.com/v5/market/kline", timeout=12,
+                r = requests.get("https://bybit.com", timeout=12,
                     params={"category":"spot","symbol":sim,"interval":tf,"limit":lim})
-                r.raise_for_status(); d = list(reversed(r.json()["result"]["list"]))
+                r.raise_for_status()
+                lista = r.json().get("result", {}).get("list") or []
+                if not lista: continue
+                d = list(reversed(lista))
             else:
-                r = requests.get("https://www.okx.com/api/v5/market/candles", timeout=12,
+                r = requests.get("https://okx.com", timeout=12,
                     params={"instId":sim.replace("USDT","-USDT"),
                             "bar":"1H" if tf=="60" else tf,"limit":lim})
-                r.raise_for_status(); d = [[x[0],x[1],x[2],x[3],x[4],x[5],0] for x in reversed(r.json()["data"])]
+                r.raise_for_status()
+                lista = r.json().get("data") or []
+                if not lista: continue
+                d = [[x[0],x[1],x[2],x[3],x[4],x[5],0] for x in reversed(lista)]
             df = pd.DataFrame(d, columns=["t","o","h","l","c","v","tv"])
             for c in "ohlcv": df[c] = df[c].astype(float)
             return df
@@ -47,6 +63,34 @@ def atr(df, n=14):
     tr = pd.concat([df["h"] - df["l"], (df["h"] - df["c"].shift()).abs(),
                     (df["l"] - df["c"].shift()).abs()], axis=1).max(axis=1)
     return tr.ewm(alpha=1/n, adjust=False).mean()
+
+f = lambda x: f"{x:,.4f}".rstrip("0").rstrip(".")
+
+def analizar_moneda(sim, usuario_nombre):
+    sim = sim.upper().strip()
+    if not sim.endswith("USDT"):
+        sim += "USDT"
+    df, d1 = velas(sim), velas(sim, "60")
+    if df is None or d1 is None or len(df) < 200:
+        return f"⚠️ {usuario_nombre}, no encontré datos suficientes para <b>{sim}</b> en Bybit/OKX. Verifica que el símbolo exista."
+    df["r"] = rsi(df["c"]); df["e20"] = ema(df["c"], 20)
+    df["e50"] = ema(df["c"], 50); df["a"] = atr(df)
+    df["vma"] = df["v"].rolling(20).mean(); e200 = ema(d1["c"], 200).iloc[-1]
+    b = df.iloc[-1]; p, at = b["c"], b["a"]
+    tend_15m = "Alcista (EMA20 > EMA50) 🟢" if b["e20"] > b["e50"] else "Bajista (EMA20 < EMA50) 🔴"
+    tend_1h = "Alcista (Sobre EMA200) 🟢" if p > e200 else "Bajista (Bajo EMA200) 🔴"
+    estado_rsi = "Sobrecompra 🔥" if b["r"] >= 70 else "Sobreventa ❄️" if b["r"] <= 30 else "Neutral ⚖️"
+    vol_rel = b["v"] / b["vma"] if b["vma"] > 0 else 1.0
+    r = at * RIESGO_ATR
+    return (f"👤 <b>Pedido de: {usuario_nombre}</b>\n"
+            f"🔎 <b>Análisis Rápido · {sim}</b> (15m)\n"
+            f"Precio actual: <b>{f(p)}</b>\n"
+            f"Tendencia 15m: {tend_15m}\n"
+            f"Tendencia 1H: {tend_1h}\n"
+            f"RSI (14): {b['r']:.1f} ({estado_rsi})\n"
+            f"Volumen: {vol_rel:.1f}x vs promedio\n"
+            f"Soporte dinámico (SL ref): {f(p - r)}\n"
+            f"Resistencia dinámica (TP ref): {f(p + r * 2)}")
 
 def score(sim):
     df, d1 = velas(sim), velas(sim, "60")
@@ -69,8 +113,6 @@ def score(sim):
     r = at * RIESGO_ATR
     sl, t1, t2 = (p-r, p+r*2, p+r*3) if d == "LONG" else (p+r, p-r*2, p-r*3)
     return dict(sim=sim, dir=d, entrada=p, sl=sl, tp1=t1, tp2=t2, conf=conf, notas=", ".join(notas))
-
-f = lambda x: f"{x:,.4f}".rstrip("0").rstrip(".")
 
 def plantilla(s):
     i = "🟢" if s["dir"] == "LONG" else "🔴"; k = 1 if s["dir"] == "LONG" else -1
@@ -96,26 +138,62 @@ def revisar():
 
 def comandos():
     r = tg("getUpdates", offset=est["offset"], timeout=0).get("result") or []
+    ahora = time.time()
+    
+    # Asegurar que el registro por usuario sea un diccionario
+    if not isinstance(est.get("consultas_user"), dict):
+        est["consultas_user"] = {}
+        
     for u in r:
         est["offset"] = u["update_id"] + 1
         m = u.get("message") or {}
         txt = (m.get("text") or "").strip()
         cid = str(m.get("chat", {}).get("id", ""))
-        uid = str(m.get("from", {}).get("id", ""))
-        # Blindaje: solo responde en tu grupo VIP o a ti como Admin
+        remitente = m.get("from") or {}
+        uid = str(remitente.get("id", ""))
+        tid = m.get("message_thread_id")
+        mid = m.get("message_id")
+        
+        # Obtener nombre o @usuario para etiquetar la respuesta
+        uname = remitente.get("username")
+        nombre = f"@{uname}" if uname else remitente.get("first_name", "Miembro")
+        
         if cid != CHAT and uid != ADMIN:
             continue
-        if not txt or not cid: continue
-        if txt.startswith("/stats"):
+        if not txt or not cid:
+            continue
+            
+        if txt.startswith("/analizar"):
+            if TEMA_CONSULTAS and tid != TEMA_CONSULTAS:
+                continue
+            partes = txt.split()
+            if len(partes) < 2:
+                enviar(f"⚠️ {nombre}, escribe la moneda así: <code>/analizar BTC</code> o <code>/analizar XRPUSDT</code>", cid, tid, mid)
+                continue
+                
+            # Limpiar historial viejo (> 1 hora) solo de este usuario
+            historial_u = [t for t in est["consultas_user"].get(uid, []) if ahora - t < 3600]
+            
+            if uid != ADMIN and len(historial_u) >= LIMITE_POR_USUARIO_HORA:
+                enviar(f"⏳ {nombre}, ya usaste tus <b>{LIMITE_POR_USUARIO_HORA} análisis por hora</b>. Podrás pedir otro en unos minutos.", cid, tid, mid)
+                est["consultas_user"][uid] = historial_u
+                continue
+                
+            historial_u.append(ahora)
+            est["consultas_user"][uid] = historial_u
+            moneda = partes[1]
+            enviar(analizar_moneda(moneda, nombre), cid, tid, mid)
+            
+        elif txt.startswith("/stats"):
             h = est.get("hist", [])
-            if not h: enviar("Aún sin señales cerradas.", cid)
+            if not h: enviar("Aún sin señales cerradas.", cid, tid, mid)
             else:
                 t1 = sum(1 for x in h if x["res"] in ("TP1","TP2"))
-                enviar(f"Cerradas: {len(h)}\nTP: {t1}\nAcierto: {t1/len(h)*100:.1f}%", cid)
+                enviar(f"Cerradas: {len(h)}\nTP: {t1}\nAcierto: {t1/len(h)*100:.1f}%", cid, tid, mid)
         elif txt.startswith("/salud"):
-            enviar(f"✅ vivo\nabiertas: {len(est['abiertas'])}", cid)
+            enviar(f"✅ vivo\nabiertas: {len(est['abiertas'])}", cid, tid, mid)
         elif txt.startswith("/estado"):
-            enviar("Usa /stats o /salud. Señales automáticas cada 5 min.", cid)
+            enviar("Comandos: /analizar MONEDA · /stats · /salud", cid, tid, mid)
 
 revisar()
 comandos()
