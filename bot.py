@@ -71,7 +71,10 @@ def revisar():
             g="SL" if c["l"]<=o["sl"] else "TP2" if c["h"]>=o["tp2"] else "TP1" if c["h"]>=o["tp1"] else None
         else:
             g="SL" if c["h"]>=o["sl"] else "TP2" if c["l"]<=o["tp2"] else "TP1" if c["l"]<=o["tp1"] else None
-        if g: enviar(f"#{sid} {o['sim']} cerrada en <b>{g}</b>"); est["abiertas"].pop(sid)
+        if g:
+            enviar(f"#{sid} {o['sim']} cerrada en <b>{g}</b>")
+            est.setdefault("hist", []).append({"id": sid, "res": g})
+            est["abiertas"].pop(sid)
 
 def comandos():
     r=tg("getUpdates", offset=est["offset"], timeout=0).get("result") or []
