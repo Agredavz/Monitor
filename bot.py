@@ -1,6 +1,8 @@
 import json, os, time, uuid, requests, pandas as pd
 
-TOKEN = os.environ["BOT_TOKEN"]; CHAT = os.environ["CHAT_ID"]; ADMIN = os.environ["ADMIN_ID"]
+TOKEN = os.environ["BOT_TOKEN"]
+CHAT = str(os.environ["CHAT_ID"])
+ADMIN = str(os.environ["ADMIN_ID"])
 SIMBOLOS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 CONF_MIN, RIESGO_ATR, COOLDOWN = 70, 1.5, 14400
 TG = f"https://api.telegram.org/bot{TOKEN}"
@@ -96,8 +98,13 @@ def comandos():
     r = tg("getUpdates", offset=est["offset"], timeout=0).get("result") or []
     for u in r:
         est["offset"] = u["update_id"] + 1
-        m = u.get("message") or {}; txt = (m.get("text") or "").strip()
-        cid = m.get("chat", {}).get("id")
+        m = u.get("message") or {}
+        txt = (m.get("text") or "").strip()
+        cid = str(m.get("chat", {}).get("id", ""))
+        uid = str(m.get("from", {}).get("id", ""))
+        # Blindaje: solo responde en tu grupo VIP o a ti como Admin
+        if cid != CHAT and uid != ADMIN:
+            continue
         if not txt or not cid: continue
         if txt.startswith("/stats"):
             h = est.get("hist", [])
