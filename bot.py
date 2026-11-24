@@ -1,12 +1,12 @@
 import json, os, time, uuid, requests, pandas as pd
 
-TOKEN = os.environ["BOT_TOKEN"]
-CHAT = str(os.environ["CHAT_ID"])
-ADMIN = str(os.environ["ADMIN_ID"])
+TOKEN = os.environ["BOT_TOKEN"].strip()
+if TOKEN.startswith("bot"):
+    TOKEN = TOKEN[3:]
+CHAT = str(os.environ["CHAT_ID"]).strip()
+ADMIN = str(os.environ["ADMIN_ID"]).strip()
 
-# Pon aquí el número ID del tema "Consultas IA" (déjalo en 0 si quieres permitirlo en cualquier tema)
 TEMA_CONSULTAS = 0  
-
 SIMBOLOS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "AVAXUSDT"]
 CONF_MIN, RIESGO_ATR, COOLDOWN = 70, 1.5, 14400
 LIMITE_POR_USUARIO_HORA = 5
@@ -16,8 +16,14 @@ est = json.load(open("estado.json"))
 fin = time.time() + 200
 
 def tg(metodo, **kw):
-    try: return requests.post(f"{TG}/{metodo}", data=kw, timeout=15).json()
-    except Exception as e: print("tg", e); return {}
+    try:
+        r = requests.post(f"{TG}/{metodo}", data=kw, timeout=15).json()
+        if not r.get("ok"):
+            print("tg_err:", r)
+        return r
+    except Exception as e:
+        print("tg_exc:", e)
+        return {}
 
 def enviar(txt, chat=CHAT, thread_id=None, reply_id=None):
     kw = {"chat_id": chat, "text": txt, "parse_mode": "HTML", "disable_web_page_preview": "true"}
@@ -28,27 +34,40 @@ def enviar(txt, chat=CHAT, thread_id=None, reply_id=None):
     return tg("sendMessage", **kw)
 
 def velas(sim, tf="15", lim=250):
-    for f in ("bybit", "okx"):
+    par_guion = sim.replace("USDT", "-USDT")
+    par_bajo = sim.replace("USDT", "_USDT")
+    for f in ("kucoin", "gate"):
         try:
-            if f == "bybit":
-                r = requests.get("https://bybit.com", timeout=12,
-                    params={"category":"spot","symbol":sim,"interval":tf,"limit":lim})
-                r.raise_for_status()
-                lista = r.json().get("result", {}).get("list") or []
-                if not lista: continue
-                d = list(reversed(lista))
-            else:
-                r = requests.get("https://okx.com", timeout=12,
-                    params={"instId":sim.replace("USDT","-USDT"),
-                            "bar":"1H" if tf=="60" else tf,"limit":lim})
+            if f == "kucoin":
+                intervalo = "1hour" if tf == "60" else "15min"
+                r = requests.get(
+                    "https://kucoin.com",
+                    timeout=12,
+                    params={"type": intervalo, "symbol": par_guion}
+                )
                 r.raise_for_status()
                 lista = r.json().get("data") or []
-                if not lista: continue
-                d = [[x[0],x[1],x[2],x[3],x[4],x[5],0] for x in reversed(lista)]
-            df = pd.DataFrame(d, columns=["t","o","h","l","c","v","tv"])
-            for c in "ohlcv": df[c] = df[c].astype(float)
+                if not lista:
+                    continue
+                d = [[x[0], x[1], x[3], x[4], x[2], x[5], x[6]] for x in reversed(lista[:lim])]
+            else:
+                intervalo = "1h" if tf == "60" else "15m"
+                r = requests.get(
+                    "https://gateio.ws",
+                    timeout=12,
+                    params={"currency_pair": par_bajo, "interval": intervalo, "limit": lim}
+                )
+                r.raise_for_status()
+                lista = r.json() or []
+                if not lista or isinstance(lista, dict):
+                    continue
+                d = [[x[0], x[5], x[3], x[4], x[2], x[6], x[1]] for x in lista]
+            df = pd.DataFrame(d, columns=["t", "o", "h", "l", "c", "v", "tv"])
+            for c in "ohlcv":
+                df[c] = df[c].astype(float)
             return df
-        except Exception as e: print(f, e)
+        except Exception as e:
+            print(f, sim, e)
     return None
 
 def ema(s, n): return s.ewm(span=n, adjust=False).mean()
@@ -71,8 +90,8 @@ def analizar_moneda(sim, usuario_nombre):
     if not sim.endswith("USDT"):
         sim += "USDT"
     df, d1 = velas(sim), velas(sim, "60")
-    if df is None or d1 is None or len(df) < 200:
-        return f"⚠️ {usuario_nombre}, no encontré datos suficientes para <b>{sim}</b> en Bybit/OKX. Verifica que el símbolo exista."
+    if df is None or d1 is None or len(df) < 150:
+        return f"⚠️ {usuario_nombre}, no encontré datos suficientes para <b>{sim}</b> en KuCoin/Gate. Verifica que el símbolo exista."
     df["r"] = rsi(df["c"]); df["e20"] = ema(df["c"], 20)
     df["e50"] = ema(df["c"], 50); df["a"] = atr(df)
     df["vma"] = df["v"].rolling(20).mean(); e200 = ema(d1["c"], 200).iloc[-1]
@@ -94,7 +113,7 @@ def analizar_moneda(sim, usuario_nombre):
 
 def score(sim):
     df, d1 = velas(sim), velas(sim, "60")
-    if df is None or d1 is None or len(df) < 220: return None
+    if df is None or d1 is None or len(df) < 150: return None
     df["r"] = rsi(df["c"]); df["e20"] = ema(df["c"], 20)
     df["e50"] = ema(df["c"], 50); df["a"] = atr(df)
     df["vma"] = df["v"].rolling(20).mean(); e200 = ema(d1["c"], 200).iloc[-1]
@@ -139,8 +158,6 @@ def revisar():
 def comandos():
     r = tg("getUpdates", offset=est["offset"], timeout=0).get("result") or []
     ahora = time.time()
-    
-    # Asegurar que el registro por usuario sea un diccionario
     if not isinstance(est.get("consultas_user"), dict):
         est["consultas_user"] = {}
         
@@ -154,7 +171,6 @@ def comandos():
         tid = m.get("message_thread_id")
         mid = m.get("message_id")
         
-        # Obtener nombre o @usuario para etiquetar la respuesta
         uname = remitente.get("username")
         nombre = f"@{uname}" if uname else remitente.get("first_name", "Miembro")
         
@@ -171,9 +187,7 @@ def comandos():
                 enviar(f"⚠️ {nombre}, escribe la moneda así: <code>/analizar BTC</code> o <code>/analizar XRPUSDT</code>", cid, tid, mid)
                 continue
                 
-            # Limpiar historial viejo (> 1 hora) solo de este usuario
             historial_u = [t for t in est["consultas_user"].get(uid, []) if ahora - t < 3600]
-            
             if uid != ADMIN and len(historial_u) >= LIMITE_POR_USUARIO_HORA:
                 enviar(f"⏳ {nombre}, ya usaste tus <b>{LIMITE_POR_USUARIO_HORA} análisis por hora</b>. Podrás pedir otro en unos minutos.", cid, tid, mid)
                 est["consultas_user"][uid] = historial_u
