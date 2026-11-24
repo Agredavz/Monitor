@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-     - name: Dependencias
+      - name: Dependencias
         run: |
           python -m pip install --upgrade pip
           python -m pip install -q requests pandas
@@ -32,5 +32,8 @@ jobs:
           git config user.name bot
           git config user.email bot@local
           git add estado.json
-          git commit -m "estado $(date -u +%FT%T)" || true
-          git push
+          if ! git diff --cached --quiet; then
+            git commit -m "estado $(date -u +%FT%T)"
+            git pull --rebase origin main
+            git push
+          fi
