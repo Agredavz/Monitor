@@ -1,0 +1,27 @@
+name: monitor
+on:
+  schedule: [{cron: "*/5 * * * *"}]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency: {group: monitor, cancel-in-progress: false}
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -q requests pandas pandas_ta "numpy<2"
+      - run: python bot.py
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
+      - if: always()
+        run: |
+          git config user.name bot && git config user.email bot@local
+          git add estado.json
+          git commit -m "estado $(date -u +%FT%T)" || true
+          git push
