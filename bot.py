@@ -26,7 +26,7 @@ def tg(metodo, **kw):
         return {}
 
 def enviar(txt, chat=CHAT, thread_id=None, reply_id=None):
-    kw = {"chat_id": chat, "text": txt, "parse_mode": "HTML", "disable_web_page_preview": "true"}
+    kw = {"chat_id": chat, "text": txt, "parse_mode": "HTML", "disable_web_page_preview": "true","allow_sending_without_reply": "true"}
     if thread_id:
         kw["message_thread_id"] = thread_id
     if reply_id:
@@ -190,7 +190,7 @@ def comandos():
                 
             historial_u.append(ahora)
             est["consultas_user"][uid] = historial_u
-            moneda = partes
+            moneda = partes [1]
             enviar(analizar_moneda(moneda, nombre), cid, tid, mid)
             
         elif txt.startswith("/stats"):
