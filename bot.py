@@ -80,8 +80,9 @@ def analizar_moneda(sim, usuario_nombre):
     df["r"] = rsi(df["c"]); df["e20"] = ema(df["c"], 20); df["e50"] = ema(df["c"], 50); df["a"] = atr(df)
     df["vma"] = df["v"].rolling(20).mean(); e200 = ema(d1["c"], 200).iloc[-1]
     b = df.iloc[-1]; p, at = b["c"], b["a"]
-    tend_15m = "Alcista (EMA20 > EMA50) 🟢" if b["e20"] > b["e50"] else "Bajista (EMA20 < EMA50) 🔴"
+    tend_15m = "Alcista (EMA20 sobre EMA50) 🟢" if b["e20"] > b["e50"] else "Bajista (EMA20 bajo EMA50) 🔴"
     tend_1h = "Alcista (Sobre EMA200) 🟢" if p > e200 else "Bajista (Bajo EMA200) 🔴"
+
     estado_rsi = "Sobrecompra 🔥" if b["r"] >= 70 else "Sobreventa ❄️" if b["r"] <= 30 else "Neutral ⚖️"
     vol_rel = b["v"] / b["vma"] if b["vma"] > 0 else 1.0
     r = at * RIESGO_ATR
