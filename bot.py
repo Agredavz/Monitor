@@ -145,6 +145,12 @@ def comandos():
 
         if cid != CHAT and uid != ADMIN: continue
         if not txt or not cid: continue
+                 # En # General (tid is None), borrar cualquier mensaje de miembros que no sea comando permitido
+        if tid is None and uid != ADMIN:
+            if not txt.startswith(("/stats", "/salud", "/estado")):
+                tg("deleteMessage", chat_id=cid, message_id=mid)
+                continue
+   
         if txt.startswith("/analizar"):
             if TEMA_CONSULTAS and tid != TEMA_CONSULTAS: continue
             partes = txt.split()
