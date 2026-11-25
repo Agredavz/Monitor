@@ -38,8 +38,11 @@ def velas(sim, tf="15", lim=250):
     # CryptoCompare API pública (100% abierta en GitHub Actions / EE.UU.)
     endpoint = "histohour" if tf == "60" else "histominute"
     agg = 1 if tf == "60" else 15
-    url = "https://" + "://cryptocompare.com" + endpoint
+    host = ".".join(["min-api", "cryptocompare", "com"])
+    url = "/".join(["https:", "", host, "data", "v2", endpoint])
+
     try:
+
         r = requests.get(
             url,
             timeout=12,
