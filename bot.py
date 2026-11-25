@@ -1,4 +1,4 @@
-import json, os, time, uuid, requests, pandas as pd
+import html, json, os, time, uuid, requests, pandas as pd
 
 TOKEN = os.environ["BOT_TOKEN"].strip()
 if "bot" in TOKEN:
@@ -72,7 +72,7 @@ def atr(df, n=14):
 f = lambda x: f"{x:,.4f}".rstrip("0").rstrip(".")
 
 def analizar_moneda(sim, usuario_nombre):
-    sim = sim.upper().strip()
+    sim = html.escape(sim.upper().strip())
     if not sim.endswith("USDT"): sim += "USDT"
     df, d1 = velas(sim), velas(sim, "60")
     if df is None or d1 is None or len(df) < 150:
@@ -140,7 +140,9 @@ def comandos():
         cid = str(m.get("chat", {}).get("id", "")); remitente = m.get("from") or {}
         uid = str(remitente.get("id", "")); tid = m.get("message_thread_id"); mid = m.get("message_id")
         uname = remitente.get("username")
-        nombre = f"@{uname}" if uname else remitente.get("first_name", "Miembro")
+        raw_nombre = f"@{uname}" if uname else remitente.get("first_name", "Miembro")
+        nombre = html.escape(raw_nombre)
+
         if cid != CHAT and uid != ADMIN: continue
         if not txt or not cid: continue
         if txt.startswith("/analizar"):
