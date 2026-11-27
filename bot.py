@@ -1,51 +1,62 @@
-import html, json, os, time, uuid, requests, pandas as pd
+import html, json, os, time, uuid, threading, requests, pandas as pd
+from flask import Flask
 
-TOKEN = os.environ["BOT_TOKEN"].strip()
-if "bot" in TOKEN:
-    TOKEN = TOKEN.split("bot")[-1].strip("/")
+TOKEN = os.environ["BOT_TOKEN"].strip().split("bot")[-1].strip("/")
 CHAT = str(os.environ["CHAT_ID"]).strip()
 ADMIN = str(os.environ["ADMIN_ID"]).strip()
 
 TEMA_CONSULTAS = 0
-SIMBOLOS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "AVAXUSDT"]
-CONF_MIN, RIESGO_ATR, COOLDOWN = 70, 1.5, 14400
-LIMITE_POR_USUARIO_HORA = 5
+SIMBOLOS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "NEARUSDT", "SUIUSDT", "APTUSDT", "ARBUSDT", "OPUSDT", "INJUSDT"]
+CONF_MIN, RIESGO_ATR, COOLDOWN, LIMITE_HORA = 60, 1.5, 14400, 5
+TG = f"https://telegram.org{TOKEN}"
 
-TG = "/".join(["https:", "", "api.telegram.org", "bot" + TOKEN])
-est = json.load(open("estado.json"))
-fin = time.time() + 200
+est = json.load(open("estado.json", encoding="utf-8")) if os.path.exists("estado.json") else {"offset": 0, "abiertas": {}, "hist": [], "ultimas": {}, "consultas_user": {}}
+
+def guardar():
+    try:
+        with open("estado.json", "w", encoding="utf-8") as fp:
+            json.dump(est, fp)
+    except Exception as e:
+        print("save_err:", e)
+
+app = Flask(__name__)
+
+@app.route("/")
+def ping():
+    return "OK", 200
+
+def web():
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
 def tg(metodo, **kw):
     try:
-        r = requests.post(f"{TG}/{metodo}", data=kw, timeout=15).json()
-        if not r.get("ok"): print("tg_err:", r)
-        return r
+        return requests.post(f"{TG}/{metodo}", data=kw, timeout=15).json()
     except Exception as e:
-        print("tg_exc:", e); return {}
+        print("tg_err:", e)
+        return {}
 
-def enviar(txt, chat=CHAT, thread_id=None, reply_id=None):
+def enviar(txt, chat=CHAT, tid=None, rid=None):
     kw = {"chat_id": chat, "text": txt, "parse_mode": "HTML", "disable_web_page_preview": "true", "allow_sending_without_reply": "true"}
-    if thread_id: kw["message_thread_id"] = thread_id
-    if reply_id: kw["reply_to_message_id"] = reply_id
+    if tid: kw["message_thread_id"] = tid
+    if rid: kw["reply_to_message_id"] = rid
     return tg("sendMessage", **kw)
 
 def velas(sim, tf="15", lim=250):
-    try:
-        url = "/".join(["https:", "", ".".join(["api", "binance", "us"]), "api", "v3", "klines"])
-        r = requests.get(url, timeout=12, params={"symbol": sim, "interval": "1h" if tf == "60" else "15m", "limit": lim})
-        r.raise_for_status()
-        lista = r.json() or []
-        if lista and isinstance(lista, list):
-            df = pd.DataFrame(lista).iloc[:, :6]
-            df.columns = ["t", "o", "h", "l", "c", "v"]
-            for c in "ohlcv": df[c] = df[c].astype(float)
-            return df
-    except Exception as e: print("binance_us", sim, e)
-
+    for dom in ["://binance.com", "api.binance.us"]:
+        try:
+            r = requests.get(f"https://{dom}/api/v3/klines", timeout=10, params={"symbol": sim, "interval": "1h" if tf == "60" else "15m", "limit": lim})
+            r.raise_for_status()
+            lista = r.json() or []
+            if lista and isinstance(lista, list):
+                df = pd.DataFrame(lista).iloc[:, :6]
+                df.columns = ["t", "o", "h", "l", "c", "v"]
+                for c in "ohlcv": df[c] = df[c].astype(float)
+                return df
+        except Exception:
+            pass
     try:
         base = "XBT" if sim == "BTCUSDT" else sim.replace("USDT", "")
-        url = "/".join(["https:", "", ".".join(["api", "kraken", "com"]), "0", "public", "OHLC"])
-        r = requests.get(url, timeout=12, params={"pair": f"{base}USD", "interval": 60 if tf == "60" else 15})
+        r = requests.get("https://kraken.com", timeout=12, params={"pair": f"{base}USD", "interval": 60 if tf == "60" else 15})
         r.raise_for_status()
         res = r.json().get("result") or {}
         clave = next((k for k in res.keys() if k != "last"), None)
@@ -54,15 +65,16 @@ def velas(sim, tf="15", lim=250):
             df.columns = ["t", "o", "h", "l", "c", "vwap", "v"]
             for c in "ohlcv": df[c] = df[c].astype(float)
             return df[["t", "o", "h", "l", "c", "v"]]
-    except Exception as e: print("kraken", sim, e)
+    except Exception as e:
+        print("kraken_err:", sim, e)
     return None
 
-def ema(s, n): return s.ewm(span=n, adjust=False).mean()
+ema = lambda s, n: s.ewm(span=n, adjust=False).mean()
 
 def rsi(s, n=14):
-    d = s.diff(); up = d.clip(lower=0); dn = -d.clip(upper=0)
-    ru = up.ewm(alpha=1/n, adjust=False).mean()
-    rd = dn.ewm(alpha=1/n, adjust=False).mean()
+    d = s.diff()
+    ru = d.clip(lower=0).ewm(alpha=1/n, adjust=False).mean()
+    rd = (-d.clip(upper=0)).ewm(alpha=1/n, adjust=False).mean()
     return 100 - 100 / (1 + ru / rd)
 
 def atr(df, n=14):
@@ -71,122 +83,118 @@ def atr(df, n=14):
 
 f = lambda x: f"{x:,.4f}".rstrip("0").rstrip(".")
 
-def analizar_moneda(sim, usuario_nombre):
+def analizar_moneda(sim, usuario):
     sim = html.escape(sim.upper().strip())
     if not sim.endswith("USDT"): sim += "USDT"
     df, d1 = velas(sim), velas(sim, "60")
     if df is None or d1 is None or len(df) < 150:
-        return f"⚠️ {usuario_nombre}, no encontré datos suficientes para <b>{sim}</b>. Verifica que el símbolo exista."
-    df["r"] = rsi(df["c"]); df["e20"] = ema(df["c"], 20); df["e50"] = ema(df["c"], 50); df["a"] = atr(df)
-    df["vma"] = df["v"].rolling(20).mean(); e200 = ema(d1["c"], 200).iloc[-1]
-    b = df.iloc[-1]; p, at = b["c"], b["a"]
-    tend_15m = "Alcista (EMA20 sobre EMA50) 🟢" if b["e20"] > b["e50"] else "Bajista (EMA20 bajo EMA50) 🔴"
-    tend_1h = "Alcista (Sobre EMA200) 🟢" if p > e200 else "Bajista (Bajo EMA200) 🔴"
-
-    estado_rsi = "Sobrecompra 🔥" if b["r"] >= 70 else "Sobreventa ❄️" if b["r"] <= 30 else "Neutral ⚖️"
-    vol_rel = b["v"] / b["vma"] if b["vma"] > 0 else 1.0
-    r = at * RIESGO_ATR
-    return (f"👤 <b>Pedido de: {usuario_nombre}</b>\n🔎 <b>Análisis Rápido · {sim}</b> (15m)\n"
-            f"Precio actual: <b>{f(p)}</b>\nTendencia 15m: {tend_15m}\nTendencia 1H: {tend_1h}\n"
-            f"RSI (14): {b['r']:.1f} ({estado_rsi})\nVolumen: {vol_rel:.1f}x vs promedio\n"
-            f"Soporte dinámico (SL ref): {f(p - r)}\nResistencia dinámica (TP ref): {f(p + r * 2)}")
+        return f"⚠️ {usuario}, sin datos para <b>{sim}</b>."
+    df["r"], df["e20"], df["e50"], df["a"], df["vma"] = rsi(df["c"]), ema(df["c"], 20), ema(df["c"], 50), atr(df), df["v"].rolling(20).mean()
+    e200 = ema(d1["c"], 200).iloc[-1]
+    b = df.iloc[-1]; p, at = b["c"], b["a"]; r = at * RIESGO_ATR
+    t15 = "Alcista 🟢" if b["e20"] > b["e50"] else "Bajista 🔴"
+    t1h = "Alcista 🟢" if p > e200 else "Bajista 🔴"
+    er = "Sobrecompra 🔥" if b["r"] >= 70 else "Sobreventa ❄️" if b["r"] <= 30 else "Neutral ⚖️"
+    vr = b["v"] / b["vma"] if b["vma"] > 0 else 1.0
+    return (f"👤 <b>Pedido de: {usuario}</b>\n🔎 <b>Análisis · {sim}</b> (15m)\nPrecio: <b>{f(p)}</b>\n"
+            f"15m: {t15} · 1H: {t1h}\nRSI (14): {b['r']:.1f} ({er}) · Vol: {vr:.1f}x\n"
+            f"SL ref: {f(p - r)} · TP ref: {f(p + r * 2)}")
 
 def score(sim):
     df, d1 = velas(sim), velas(sim, "60")
     if df is None or d1 is None or len(df) < 150: return None
-    df["r"] = rsi(df["c"]); df["e20"] = ema(df["c"], 20); df["e50"] = ema(df["c"], 50); df["a"] = atr(df)
-    df["vma"] = df["v"].rolling(20).mean(); e200 = ema(d1["c"], 200).iloc[-1]
-    a, b = df.iloc[-2], df.iloc[-1]; p, at = b["c"], b["a"]
-    if a["e20"] <= a["e50"] and b["e20"] > b["e50"]: d = "LONG"
-    elif a["e20"] >= a["e50"] and b["e20"] < b["e50"]: d = "SHORT"
+    df["r"], df["e20"], df["e50"], df["a"], df["vma"] = rsi(df["c"]), ema(df["c"], 20), ema(df["c"], 50), atr(df), df["v"].rolling(20).mean()
+    e200 = ema(d1["c"], 200).iloc[-1]
+    p2, a, b = df.iloc[-3], df.iloc[-2], df.iloc[-1]; p, at = b["c"], b["a"]
+    alc = (a["e20"] <= a["e50"] and b["e20"] > b["e50"]) or (p2["e20"] <= p2["e50"] and a["e20"] > a["e50"] and b["e20"] > b["e50"])
+    baj = (a["e20"] >= a["e50"] and b["e20"] < b["e50"]) or (p2["e20"] >= p2["e50"] and a["e20"] < a["e50"] and b["e20"] < b["e50"])
+    if alc: d = "LONG"
+    elif baj: d = "SHORT"
     else: return None
     conf, notas = 40, []
     if (d == "LONG") == (p > e200): conf += 20; notas.append("EMA200 1h a favor")
     else: notas.append("contra EMA200 1h")
     if (35 < b["r"] < 68) if d == "LONG" else (32 < b["r"] < 65): conf += 15; notas.append(f"RSI {b['r']:.0f}")
-    if b["v"] > b["vma"] * 1.2: conf += 15; notas.append(f"vol {b['v']/b['vma']:.1f}x")
-    if at / p > 0.004: conf += 10; notas.append("volatilidad sana")
+    if b["v"] > b["vma"] * 1.1: conf += 15; notas.append(f"vol {b['v']/b['vma']:.1f}x")
+    if at / p > 0.003: conf += 10; notas.append("volatilidad sana")
     if conf < CONF_MIN: return None
     r = at * RIESGO_ATR
-    sl, t1, t2 = (p-r, p+r*2, p+r*3) if d == "LONG" else (p+r, p-r*2, p-r*3)
+    sl, t1, t2 = (p - r, p + r * 2, p + r * 3) if d == "LONG" else (p + r, p - r * 2, p - r * 3)
     return dict(sim=sim, dir=d, entrada=p, sl=sl, tp1=t1, tp2=t2, conf=conf, notas=", ".join(notas))
 
 def plantilla(s):
-    i = "🟢" if s["dir"] == "LONG" else "🔴"; k = 1 if s["dir"] == "LONG" else -1
+    i, k = ("🟢", 1) if s["dir"] == "LONG" else ("🔴", -1)
     pc = lambda v: (v - s["entrada"]) / s["entrada"] * 100 * k
     return (f"{i} <b>{s['dir']} {s['sim']}</b> · 15m\nEntrada: {f(s['entrada'])}\n"
             f"SL: {f(s['sl'])} ({pc(s['sl']):+.2f}%)\nTP1: {f(s['tp1'])} ({pc(s['tp1']):+.2f}%) · "
-            f"TP2: {f(s['tp2'])} ({pc(s['tp2']):+.2f}%)\nR:R 1:2 · Confianza {s['conf']}/100\n"
-            f"Contexto: {s['notas']}\nInvalidación: cierre 15m más allá del SL")
+            f"TP2: {f(s['tp2'])} ({pc(s['tp2']):+.2f}%)\nR:R 1:2 · Confianza {s['conf']}/100\nContexto: {s['notas']}")
 
 def revisar():
-    for sid, o in list(est["abiertas"].items()):
+    for sid, o in list(est.get("abiertas", {}).items()):
         df = velas(o["sim"], "15", 3)
         if df is None: continue
-        c = df.iloc[-1]; g = None
-        if o["dir"] == "LONG": g = "SL" if c["l"] <= o["sl"] else "TP2" if c["h"] >= o["tp2"] else "TP1" if c["h"] >= o["tp1"] else None
-        else: g = "SL" if c["h"] >= o["sl"] else "TP2" if c["l"] <= o["tp2"] else "TP1" if c["l"] <= o["tp1"] else None
+        c = df.iloc[-1]
+        g = ("SL" if c["l"] <= o["sl"] else "TP2" if c["h"] >= o["tp2"] else "TP1" if c["h"] >= o["tp1"] else None) if o["dir"] == "LONG" else ("SL" if c["h"] >= o["sl"] else "TP2" if c["l"] <= o["tp2"] else "TP1" if c["l"] <= o["tp1"] else None)
         if g:
             enviar(f"#{sid} {o['sim']} cerrada en <b>{g}</b>")
             est.setdefault("hist", []).append({"id": sid, "res": g})
             est["abiertas"].pop(sid)
+            guardar()
 
 def comandos():
-    r = tg("getUpdates", offset=est["offset"], timeout=0).get("result") or []
+    r = tg("getUpdates", offset=est.get("offset", 0), timeout=10).get("result") or []
     ahora = time.time()
     if not isinstance(est.get("consultas_user"), dict): est["consultas_user"] = {}
     for u in r:
         est["offset"] = u["update_id"] + 1
         m = u.get("message") or {}; txt = (m.get("text") or "").strip()
-        cid = str(m.get("chat", {}).get("id", "")); remitente = m.get("from") or {}
-        uid = str(remitente.get("id", "")); tid = m.get("message_thread_id"); mid = m.get("message_id")
-        uname = remitente.get("username")
-        raw_nombre = f"@{uname}" if uname else remitente.get("first_name", "Miembro")
-        nombre = html.escape(raw_nombre)
-
-        if cid != CHAT and uid != ADMIN: continue
-        if not txt or not cid: continue
-                 # En # General (tid is None), borrar cualquier mensaje de miembros que no sea comando permitido
-        if tid is None and uid != ADMIN:
-            if not txt.startswith(("/stats", "/salud", "/estado")):
-                tg("deleteMessage", chat_id=cid, message_id=mid)
-                continue
-   
-        if txt.startswith("/analizar"):
+        cid = str(m.get("chat", {}).get("id", "")); rem = m.get("from") or {}
+        uid = str(rem.get("id", "")); tid = m.get("message_thread_id"); mid = m.get("message_id")
+        nombre = html.escape(f"@{rem['username']}" if rem.get("username") else rem.get("first_name", "Miembro"))
+        if (cid != CHAT and uid != ADMIN) or not txt or not cid: continue
+        if tid is None and uid != ADMIN and not txt.startswith(("/stats", "/salud", "/estado")):
+            tg("deleteMessage", chat_id=cid, message_id=mid); continue
+        if txt.startswith(("/estado", "/salud")):
+            enviar(f"✅ <b>Bot Activo 24/7</b> · {len(SIMBOLOS)} pares · Abiertas: {len(est.get('abiertas', {}))}", cid, tid, mid)
+        elif txt.startswith("/stats"):
+            h = est.get("hist", [])
+            tp = sum(1 for x in h if x.get("res") in ("TP1", "TP2"))
+            sl = sum(1 for x in h if x.get("res") == "SL")
+            ef = (tp / (tp + sl) * 100) if (tp + sl) > 0 else 0
+            enviar(f"📈 <b>Stats:</b> Total {tp+sl} | TP: {tp} | SL: {sl} | Efectividad: <b>{ef:.1f}%</b>", cid, tid, mid)
+        elif txt.startswith("/analizar"):
             if TEMA_CONSULTAS and tid != TEMA_CONSULTAS: continue
             partes = txt.split()
             if len(partes) < 2:
-                enviar(f"⚠️ {nombre}, escribe la moneda así: <code>/analizar BTC</code> o <code>/analizar XRPUSDT</code>", cid, tid, mid); continue
-            historial_u = [t for t in est["consultas_user"].get(uid, []) if ahora - t < 3600]
-            if uid != ADMIN and len(historial_u) >= LIMITE_POR_USUARIO_HORA:
-                enviar(f"⏳ {nombre}, ya usaste tus <b>{LIMITE_POR_USUARIO_HORA} análisis por hora</b>. Podrás pedir otro en unos minutos.", cid, tid, mid)
-                est["consultas_user"][uid] = historial_u; continue
-            historial_u.append(ahora); est["consultas_user"][uid] = historial_u
+                enviar(f"⚠️ {nombre}, usa: <code>/analizar BTC</code>", cid, tid, mid); continue
+            hu = [t for t in est["consultas_user"].get(uid, []) if ahora - t < 3600]
+            if len(hu) >= LIMITE_HORA and uid != ADMIN:
+                enviar(f"⏳ {nombre}, límite de {LIMITE_HORA}/hora alcanzado.", cid, tid, mid); continue
+            hu.append(ahora); est["consultas_user"][uid] = hu
             enviar(analizar_moneda(partes[1], nombre), cid, tid, mid)
-        elif txt.startswith("/stats"):
-            h = est.get("hist", [])
-            if not h: enviar("Aún sin señales cerradas.", cid, tid, mid)
-            else:
-                t1 = sum(1 for x in h if x["res"] in ("TP1","TP2"))
-                enviar(f"Cerradas: {len(h)}\nTP: {t1}\nAcierto: {t1/len(h)*100:.1f}%", cid, tid, mid)
-        elif txt.startswith("/salud"):
-            enviar(f"✅ vivo\nabiertas: {len(est['abiertas'])}", cid, tid, mid)
-        elif txt.startswith("/estado"):
-            enviar("Comandos: /analizar MONEDA · /stats · /salud", cid, tid, mid)
+        guardar()
 
-revisar()
-comandos()
-for s in SIMBOLOS:
-    if time.time() > fin: break
-    try:
-        x = score(s)
-        if not x: continue
-        clave = f"{s}_{x['dir']}"
-        if time.time() - est["ultimo"].get(clave, 0) < COOLDOWN: continue
-        est["ultimo"][clave] = time.time()
-        sid = uuid.uuid4().hex[:6]
-        est["abiertas"][sid] = {k: x[k] for k in ("sim","dir","sl","tp1","tp2")}
-        enviar(plantilla(x) + f"\nID: #{sid}")
-    except Exception as e: print("score", s, e)
+def escaner():
+    est.setdefault("ultimas", {}); est.setdefault("abiertas", {})
+    while True:
+        try:
+            revisar()
+            ahora = time.time()
+            for sim in SIMBOLOS:
+                if ahora - est["ultimas"].get(sim, 0) < COOLDOWN: continue
+                s = score(sim)
+                if s:
+                    sid = str(uuid.uuid4())[:4].upper()
+                    enviar(f"🚨 <b>SEÑAL #{sid}</b>\n\n" + plantilla(s))
+                    est["abiertas"][sid] = s; est["ultimas"][sim] = ahora; guardar(); time.sleep(2)
+        except Exception as e:
+            print("escaner_err:", e)
+        time.sleep(360)
 
-json.dump(est, open("estado.json", "w"))
+if __name__ == "__main__":
+    threading.Thread(target=web, daemon=True).start()
+    threading.Thread(target=escaner, daemon=True).start()
+    print("Bot 24/7 iniciado...")
+    while True:
+        try: comandos()
+        except Exception as e: print("loop_err:", e); time.sleep(3)
