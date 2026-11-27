@@ -8,7 +8,7 @@ ADMIN = str(os.environ["ADMIN_ID"]).strip()
 TEMA_CONSULTAS = 0
 SIMBOLOS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT", "NEARUSDT", "SUIUSDT", "APTUSDT", "ARBUSDT", "OPUSDT", "INJUSDT"]
 CONF_MIN, RIESGO_ATR, COOLDOWN, LIMITE_HORA = 60, 1.5, 14400, 5
-TG = f"https://telegram.org{TOKEN}"
+TG = "/".join(["https:", "", "api.telegram.org", "bot" + TOKEN])
 
 est = json.load(open("estado.json", encoding="utf-8")) if os.path.exists("estado.json") else {"offset": 0, "abiertas": {}, "hist": [], "ultimas": {}, "consultas_user": {}}
 
